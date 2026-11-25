@@ -1,0 +1,28 @@
+[project]
+name = "nanoask"
+version = "0.1.0"
+description = "Document Q&A server: nanochat transformer + nano-vllm paged KV cache / continuous batching + askme hybrid RAG"
+requires-python = ">=3.10"
+dependencies = [
+  "torch>=2.4",
+  "numpy",
+  "tiktoken",
+  "rustbpe",
+  "fastapi",
+  "uvicorn",
+  "python-multipart",
+  "pypdf",
+]
+
+[project.optional-dependencies]
+neural = ["sentence-transformers"]   # --embedder st:BAAI/bge-m3  --reranker ce:BAAI/bge-reranker-v2-m3
+dev = ["pytest", "httpx"]
+
+[project.scripts]
+nanoask-serve = "nanoask.server:main"
+
+[tool.setuptools.packages.find]
+include = ["nanoask*"]
+
+[tool.setuptools.package-data]
+nanoask = ["static/*.html"]

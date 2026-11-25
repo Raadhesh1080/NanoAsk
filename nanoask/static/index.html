@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NanoAsk</title>
+<style>
+:root{--bg:#f7f7f5;--panel:#fff;--ink:#1d1d1b;--muted:#6b6b66;--line:#e3e2dd;--accent:#2f5d8a;--chip:#eef2f6}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--panel:#1f1f1d;--ink:#ecebe6;--muted:#9b9a94;--line:#33332f;--accent:#7fb0e0;--chip:#26303a}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,sans-serif}
+main{max-width:860px;margin:0 auto;padding:24px 16px}
+h1{font-size:20px;margin:0 0 4px}.sub{color:var(--muted);margin:0 0 20px;font-size:13px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input[type=text]{flex:1;min-width:200px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit}
+button{padding:9px 14px;border:0;border-radius:8px;background:var(--accent);color:#fff;font:inherit;cursor:pointer}
+button:disabled{opacity:.5}select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+.answer{white-space:pre-wrap;min-height:1.5em}.label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin:10px 0 4px}
+.p{border-top:1px solid var(--line);padding:8px 0;font-size:13px}.p b{color:var(--accent)}
+.ok{color:#2e7d4f}.warn{color:#a8661b}.turn{font-size:13px;color:var(--muted);border-left:2px solid var(--line);padding-left:8px;margin:4px 0}
+.chip{display:inline-block;background:var(--chip);border-radius:6px;padding:1px 6px;font-size:11px;color:var(--muted);margin-left:4px}
+#stats{font:12px ui-monospace,monospace;color:var(--muted);white-space:pre-wrap}
+</style>
+</head>
+<body><main>
+<h1>NanoAsk</h1>
+<p class="sub">nanochat transformer · nano-vllm paged KV cache + continuous batching · askme hybrid RAG</p>
+
+<div class="card"><div class="row">
+  <input type="file" id="files" multiple accept=".pdf,.md,.txt,.html,.htm">
+  <button id="up">Upload</button><span id="upmsg" class="sub" style="margin:0"></span>
+</div><div class="label">Documents</div><div id="docs"></div></div>
+
+<div class="card">
+  <div class="row">
+    <input type="text" id="q" placeholder="Ask a question about your documents">
+    <select id="mode"><option value="auto">Auto (checked LLM)</option><option value="llm">Raw LLM</option><option value="extractive">Extractive</option></select>
+    <button id="ask">Ask</button><button id="newchat" style="background:var(--muted)">New chat</button>
+  </div>
+  <div id="hist"></div><div class="label">Answer <span id="badge"></span></div><div id="ans" class="answer"></div>
+  <div id="ext"></div>
+  <div class="label">Retrieved passages</div><div id="ps"></div>
+</div>
+
+<div class="card"><div class="label" style="margin-top:0">Server stats</div><div id="stats"></div></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);let history=[];
+async function docs(){const j=await (await fetch('/documents')).json();$('docs').innerHTML='';
+ for(const d of j.documents){const r=document.createElement('div');r.className='p row';r.innerHTML='<span style="flex:1"></span><span class="chip"></span><button style="padding:3px 9px">Delete</button>';
+  r.children[0].textContent=d.title;r.children[1].textContent=d.chunks+' chunks';
+  r.children[2].onclick=async()=>{await fetch('/documents/'+d.doc_id,{method:'DELETE'});docs();stats()};$('docs').appendChild(r)}
+ if(!j.documents.length)$('docs').textContent='No documents yet.'}
+function renderHist(){$('hist').innerHTML='';for(let i=0;i<history.length;i+=2){const d=document.createElement('div');d.className='turn';d.textContent='Q: '+history[i].content+'  →  '+history[i+1].content.slice(0,160);$('hist').appendChild(d)}}
+function badge(ev){const b=$('badge');if(ev.grounded===undefined){b.textContent='';return}
+ b.className=ev.fallback?'warn':(ev.grounded?'ok':'warn');
+ b.textContent=ev.fallback?'· model answer not grounded, showing extractive':(ev.grounded?'· grounded in passages':'· not verified')}
+async function stats(){try{const s=await (await fetch('/stats')).json();$('stats').textContent=JSON.stringify({kv_cache:s.kv_cache,engine:s.engine,index:s.index},null,1)}catch(e){}}
+$('up').onclick=async()=>{const fd=new FormData();for(const f of $('files').files)fd.append('files',f);
+ if(![...fd].length)return;$('upmsg').textContent='Indexing…';
+ const r=await fetch('/ingest',{method:'POST',body:fd});const j=await r.json();
+ $('upmsg').textContent=r.ok?j.ingested.map(x=>`${x.file}: +${x.chunks_added}`).join(', '):j.detail;stats();docs()};
+function showPassages(ps){$('ps').innerHTML='';for(const p of ps){const d=document.createElement('div');d.className='p';
+ d.innerHTML=`<b>[${p.rank}]</b> <span></span><span class="chip">score ${p.score}</span><span class="chip">bm25 #${p.bm25_rank??'–'}</span><span class="chip">dense #${p.dense_rank??'–'}</span><div></div>`;
+ d.children[1].textContent=p.title;d.lastChild.textContent=p.text.slice(0,400)+(p.text.length>400?'…':'');$('ps').appendChild(d)}}
+async function ask(){const q=$('q').value.trim();if(!q)return;$('ask').disabled=true;$('ans').textContent='';$('ext').innerHTML='';$('ps').innerHTML='';$('badge').textContent='';
+ const mode=$('mode').value;
+ try{
+ if(mode==='extractive'){const j=await (await fetch('/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,mode})})).json();
+  $('ans').textContent=j.answer;showPassages(j.passages);history.push({role:'user',content:q},{role:'assistant',content:j.answer});renderHist();return}
+ const r=await fetch('/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,stream:true,mode,history:history.slice(-6)})});
+ const rd=r.body.getReader(),dec=new TextDecoder();let buf='';
+ for(;;){const {value,done}=await rd.read();if(done)break;buf+=dec.decode(value,{stream:true});
+  let i;while((i=buf.indexOf('\n\n'))>=0){const line=buf.slice(0,i);buf=buf.slice(i+2);if(!line.startsWith('data: '))continue;
+   const ev=JSON.parse(line.slice(6));
+   if(ev.type==='passages')showPassages(ev.passages);
+   else if(ev.type==='token')$('ans').textContent+=ev.text;
+   else if(ev.type==='done'){$('ans').textContent=ev.answer;badge(ev);history.push({role:'user',content:q},{role:'assistant',content:ev.answer});renderHist();const d=document.createElement('div');d.innerHTML='<div class="label">Extractive answer (model-free)</div><div class="answer"></div>';d.lastChild.textContent=ev.extractive_answer;$('ext').appendChild(d)}}}
+ }finally{$('ask').disabled=false;stats()}}
+$('ask').onclick=ask;$('newchat').onclick=()=>{history=[];renderHist();$('ans').textContent='';$('ps').innerHTML='';$('ext').innerHTML='';$('badge').textContent=''};docs();$('q').onkeydown=e=>{if(e.key==='Enter')ask()};stats();
+</script></body></html>

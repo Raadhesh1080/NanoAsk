@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+data/index.json
+# keep only the small demo model in git
+checkpoints/*
+!checkpoints/tiny/
