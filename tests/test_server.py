@@ -32,7 +32,7 @@ def test_ingest_query_concurrency(app):
         async with client(app) as c:
             files = [("files", (p.name, p.read_bytes())) for p in sorted(DOCS.glob("*.md"))]
             r = await c.post("/ingest", files=files)
-            assert r.status_code == 200 and r.json()["index"]["documents"] == 4
+            assert r.status_code == 200 and r.json()["index"]["documents"] == len(files)
 
             qs = ["How much is the hotel reimbursement?", "What is HNSW?", "What is prefix caching?",
                   "How many sick days?", "What is rotary embedding?", "What is BM25?"]
@@ -70,9 +70,9 @@ def test_ingest_query_concurrency(app):
 
             # document management
             docs = (await c.get("/documents")).json()["documents"]
-            assert len(docs) == 4
+            assert len(docs) == len(files)
             pol = next(d for d in docs if "Northwind" in d["title"])
             r = await c.delete(f"/documents/{pol['doc_id']}")
-            assert r.json()["index"]["documents"] == 3
+            assert r.json()["index"]["documents"] == len(files) - 1
             assert (await c.delete("/documents/missing")).status_code == 404
     asyncio.run(run())

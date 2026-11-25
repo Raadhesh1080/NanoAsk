@@ -24,13 +24,21 @@ A small, readable document Q&A server that combines three reference projects:
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest tests -q                       # 20 tests, ~45 s on CPU
-python scripts/train_tiny.py --steps 3000 --n-layer 6   # optional: ~20 min CPU demo model (see below)
-python scripts/eval_qa.py                       # QA accuracy on 16 hand-written questions
+python -m pytest tests -q                       # 23 tests, ~1 min on CPU
 python -m nanoask.server --docs data/sample_docs
 # open http://127.0.0.1:8000, or:
 curl -s localhost:8000/query -H 'content-type: application/json' \
      -d '{"question":"How much is the hotel reimbursement per night?"}'
+```
+
+Evaluation and benchmarks (see [Results](#results)):
+
+```bash
+python scripts/build_corpus.py                  # real training/distractor text: READMEs of 225 PyPI packages
+python scripts/eval_qa.py                       # 88 handwritten questions over 8 documents, with leak check
+python scripts/eval_retrieval.py                # HNSW recall on real chunk embeddings
+python scripts/bench.py                         # batching throughput + KV memory
+python scripts/train_tiny.py --steps 5000 --n-layer 6 --k 2 --ctx-chars 1200   # demo model, ~50 min CPU
 ```
 
 ### Using a real nanochat model (recommended for real answers)
@@ -85,33 +93,78 @@ python -m nanoask.server --embedder st:BAAI/bge-m3 --reranker ce:BAAI/bge-rerank
 - `fusion.py`: askme's `reciprocal_rank_fusion` and `alpha_fusion`.
 - `rerank.py`: a cross-encoder (askme's BGE reranker) when available; offline default is a pairwise feature reranker (idf coverage, term proximity, phrase match, dense cosine).
 - `embeddings.py`: BGE via sentence-transformers when available; offline default is LSA (TF-IDF + truncated SVD).
-- `pipeline.py`: ingest → hybrid retrieve → rerank → numbered-citation prompt, plus a model-free extractive answer and `ground_answer()`, a faithfulness check. Each answer sentence must be supported by a passage (≥70% of its terms); its citation is rewritten to the passage that actually supports it; and it must be at least half as on-topic as the best sentence available. New documents are folded into the existing embedding and appended to HNSW; a full refit happens only after the corpus grows 25%.
+- `pipeline.py`: ingest → hybrid retrieve → rerank → numbered-citation prompt, plus a model-free extractive answer and `ground_answer()`, a faithfulness check. Each answer sentence must be supported by a passage (≥70% of its terms); its citation is rewritten to the passage that actually supports it; and it must be at least as on-topic as the best sentence the extractive answer would use. New documents are folded into the existing embedding and appended to HNSW; a full refit happens only after the corpus grows 25%.
 
 ## Verified behaviour (tests/)
 
 - **Real nanochat compatibility** (`test_nanochat_compat.py`): a model built and saved with nanochat's own `GPT` and `checkpoint_manager`, including the `_orig_mod.` prefix from `torch.compile`, plus a tokenizer trained with nanochat's own `RustBPETokenizer`. Both load through NanoAsk with logits equal to 1e-5. Batched paged generation is token-identical to nanochat's `GPT.generate`, and chat rendering is byte-identical. The test needs a nanochat checkout (`NANOCHAT_REPO`) and is skipped otherwise.
-- **Paged == dense**: greedy outputs from the paged, batched, chunked-prefill engine are token-identical to nanochat's plain dense forward, including sliding windows and GQA. Single-step logits match to 1e-4.
+- **Paged == dense**: greedy outputs from the paged, batched, chunked-prefill engine are token-identical to nanochat's plain dense forward, including sliding windows and GQA. Single-step logits match to 1e-4. `NANOASK_TEST_DEVICE=cuda` runs these on a GPU.
+- **bf16** (the CUDA dtype): paged logits stay within tolerance of the dense forward; batched generation frees all KV blocks.
 - **Prefix caching** reuses blocks across requests and still gives identical outputs.
 - **Preemption**: six sequences in a KV pool too small for them all still produce correct outputs, and every block is returned.
-- **HNSW** recall@10 > 0.9 against brute force on 2,000 random vectors.
-- **Retrieval**: the right document ranks first for five question types on the sample docs.
-- **Server**: concurrent `/query` calls land in the same batch (`max_batch_size > 1`). Streaming, extractive and auto fallback, follow-up history, and document list/delete all work.
+- **HNSW** recall@10 > 0.9 on 2,000 random vectors and > 0.95 on real LSA embeddings of installed-package READMEs.
+- **Server**: concurrent `/query` calls land in the same batch. Streaming, extractive and auto fallback, follow-up history, and document list/delete all work.
 - **Index maintenance**: small ingests don't refit the embedding; deletes leave BM25, HNSW and the store consistent.
 - **Grounding check**: accepts a correct answer and fixes its citation; rejects a copied but off-topic sentence and a hallucination.
 
-`scripts/bench.py` on a 4-core CPU with an 8M-param model and 24 requests: **5.2× throughput** from continuous batching over one-at-a-time serving, and **5× less KV memory** with paging than reserving `max_model_len` per request.
+## Results
+
+All numbers below were measured on a 4-core x86 CPU (no GPU), torch 2.15, with nothing else running.
+
+### Question answering (`scripts/eval_qa.py`)
+
+88 handwritten questions over the 8 documents in `data/sample_docs` (company handbook, library rules, clinic information, solar battery manual, a nature article, and three ML explainers). The expected answer text is in `data/eval/qa.jsonl`.
+
+**The demo model never sees these documents.** It and its tokenizer are trained only on READMEs of 225 PyPI packages (`scripts/build_corpus.py`). The eval script checks every test sentence against fingerprints of the training sentences: **0 of 145 overlap**.
+
+| | ret@1 | ret@k | model alone | **Auto** | extractive, 1 sentence | extractive, ≤3 sentences |
+|---|---|---|---|---|---|---|
+| 8 test docs in the index | 95% | 100% | **0%** | **93%** | 85% | 93% |
+| + 225 unrelated READMEs as distractors (1,851 chunks) | 93% | 97% | 0% | 90% | 84% | 90% |
+
+- **Retrieval works; the tiny generator does not.** The demo model (3.5M params, 5,000 steps, ~50 min on CPU) learned the citation format and README-style language, but not reading comprehension: on unseen documents it produces fluent-looking nonsense. Training on longer contexts (3 passages) stalled at the same point. A model this small cannot learn to read general text in a CPU-hour; for real generated answers, use a nanochat SFT checkpoint (`--checkpoint`).
+- **Earlier versions of this README reported 69% for the model. That was a leak:** the model was trained on the same documents it was tested on. Re-scored on this 88-question set, that leaky model answered 55% of the questions on the 4 documents it had been trained on (25–82% per document) and **0% on the 4 documents it had never seen**.
+- **Auto mode vs extractive.** Auto keeps the model's answer only if it passes the grounding check, and otherwise serves the extractive answer. The check rejected all 88 of the clean model's answers, so Auto equals extractive (93%) and the model neither helps nor hurts. Auto used to score *below* extractive (88% vs 94% on the old 16 questions) for two reasons:
+  1. The relevance rule was lenient. It kept a model answer that was only half as on-topic as the best available sentence, which let a related-but-wrong sentence through. The rule now requires the model's answer to be **at least as relevant as the sentence extraction would pick**. On the leaky model this raised Auto from 89% to 92%; the remaining gap is a single tie the model broke wrongly.
+  2. The comparison wasn't like for like. The extractive answer returns up to 3 sentences, which gives it more chances to contain the fact than a one-sentence model answer. Restricted to one sentence, extraction scores 85%.
+
+  So with this demo model, the language model adds nothing over extraction; Auto exists so that a weak or hallucinating model can't make answers worse. The model only becomes useful with a checkpoint that can actually read, at which point the same eval script measures it (`--checkpoint ...`).
+
+### Retrieval (`scripts/eval_retrieval.py`)
+
+HNSW recall against exact cosine search, on real LSA embeddings (256-d) of 1,851 chunks (the PyPI READMEs plus the test documents). Queries: the 88 questions plus 300 sentences sampled from the corpus. k = 10, M = 16, ef_construction = 200.
+
+| index | recall@10 | ms / query |
+|---|---|---|
+| NanoAsk HNSW, ef_search = 16 | 0.972 | 0.46 |
+| NanoAsk HNSW, ef_search = 32 | 0.993 | 0.51 |
+| **NanoAsk HNSW, ef_search = 64 (default)** | **0.999** | 0.84 |
+| NanoAsk HNSW, ef_search = 128 | 1.000 | 1.47 |
+| hnswlib (C++), ef = 16 / 64 | 0.935 / 0.989 | 0.03 / 0.06 |
+| brute force (numpy) | 1.000 | 0.05 |
+
+At this size, brute force is faster than either HNSW. Approximate search only pays off at much larger collections, and there the pure-Python implementation should be swapped for hnswlib/FAISS.
+
+### Serving (`scripts/bench.py`)
+
+CPU preset: random-weight nanochat GPT (6 layers, 256-d, 8.0M params; throughput doesn't depend on the weight values), 24 requests, prompts 50–300 tokens, outputs 32–64 tokens, `max_model_len = 1024`, KV block size 16.
+
+| | time | output tok/s |
+|---|---|---|
+| one request at a time | 5.15 s | 219 |
+| continuous batching | 1.30 s | **868 (4.0×)** |
+
+**KV memory with all 24 requests resident: 28.7 MB paged vs 144.0 MB if every request reserves `max_model_len = 1024` tokens, i.e. 5.0× less.** The requests use 197 tokens each on average, so the saving scales with `max_model_len` ÷ actual length: with `max_model_len = 2048` the same workload would need 10× less.
+
+### GPU results
+
+Not yet measured. `notebooks/gpu_benchmark.ipynb` runs the GPU correctness tests, `bench.py --preset gpu` (12-layer/768-d model, 128 requests, prompts 100–1000 tokens, `max_model_len = 2048`) and the QA eval on a free Colab or Kaggle T4, and prints a table to paste here.
 
 ## Honest limitations
 
-- **Answer quality depends on the model.** Without any checkpoint the server uses a random tiny model, so its raw answers are noise; Auto mode then falls back to the extractive answer. `scripts/train_tiny.py --steps 3000 --n-layer 6` (about 20 min on a 4-core CPU) trains a 3.4M-param nanochat-architecture model to copy the relevant sentence from the context and cite it. Results from `scripts/eval_qa.py` on 16 hand-written questions over the sample docs:
-
-  | retrieval@1 | raw model | Auto mode (checked + fallback) | extractive only | model answer grounded |
-  |---|---|---|---|---|
-  | 100% | 69% | 88% | 94% | 75% |
-
-  The grounding check had one false accept: a related but different sentence for "Why does the KV cache use so much memory?". The model is trained only on the given documents, so for new documents retrain it, or better, use a real nanochat d20/d32 SFT checkpoint.
-- No tensor parallelism and no CUDA graphs (both are in nano-vllm and dropped here for clarity and CPU support).
+- **The bundled demo model can't answer questions** (see Results). Auto mode falls back to extractive answers, so the server is still useful, but generated answers need a real nanochat checkpoint.
+- **The GPU path is untested** until the notebook above has been run: `--device cuda`, bf16 weights and KV cache, and memory-based KV sizing. The bf16 code path itself is tested on CPU. flash-attn and CUDA graphs are not used.
+- No tensor parallelism (nano-vllm has it; dropped for clarity and CPU support).
 - With the default LSA embedder, chunks folded in between refits only use vocabulary seen at the last fit; the next refit (after 25% growth) picks up new terms. BM25 always indexes every term immediately.
 - Deleting a document rebuilds the indexes (HNSW has no cheap delete).
-- GPU paths (`--device cuda`, bf16, memory-based KV sizing) are written but untested here (no GPU in this environment). flash-attn and CUDA graphs are not used.
-- The pure-Python HNSW is for clarity, not speed. For millions of vectors use hnswlib/FAISS/Milvus, as askme does.
+- The pure-Python HNSW is for clarity, not speed (see the retrieval table).

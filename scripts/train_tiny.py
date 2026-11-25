@@ -1,22 +1,28 @@
 """
 Train a tiny nanochat-architecture model that answers from retrieved context, on CPU, in minutes.
 
-This is a *demo* model so the whole stack can be exercised end-to-end without a GPU or
-downloads. It learns one skill: given the RAG prompt (numbered passages + question), copy the
-most relevant sentence and cite its passage number. It is trained only on the documents you
-point it at, so it will not generalise like a real nanochat SFT checkpoint (d20/d32 trained on
-GPUs with nanochat's speedrun.sh) - pass one of those to the server with --checkpoint.
+This is a *demo* model so the whole stack can be exercised end-to-end without a GPU. It learns
+one skill: given the RAG prompt (numbered passages + question), copy the most relevant sentence
+and cite its passage number. It is trained on a corpus of real PyPI package READMEs
+(scripts/build_corpus.py) and evaluated on the unrelated handwritten documents in
+data/sample_docs, which it never sees (scripts/eval_qa.py checks this). It is still far weaker
+than a real nanochat SFT checkpoint (d20/d32, trained on GPUs with nanochat's speedrun.sh);
+pass one of those to the server with --checkpoint.
 
 Steps (mirrors nanochat's pipeline at toy scale):
   1. train a BPE tokenizer with rustbpe            (nanochat/tokenizer.py)
   2. build synthetic RAG conversations with the real retrieval pipeline (askme-style)
   3. supervised fine-tuning with loss masked to assistant tokens (nanochat/chat_sft.py)
 
-    python scripts/train_tiny.py --docs data/sample_docs --steps 600
+    python scripts/build_corpus.py
+    python scripts/train_tiny.py --docs data/pypi_corpus --steps 4000 --n-layer 6
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import os
 import random
 import re
 import sys
@@ -60,26 +66,40 @@ def make_question(sent: str, words: list[str], content: list[str], rng: random.R
     return q[0].upper() + q[1:]
 
 
-def make_examples(rag: RAGPipeline, rng: random.Random, k: int, ctx_chars: int, per_sentence: int):
-    examples = []
-    for c in rag.chunks:
-        for sent in re.split(r"(?<=[.!?])\s+|\n+", c.text):
-            sent = sent.strip()
+def split_sentences(text: str) -> list[str]:
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", text) if s.strip()]
+
+
+def sentence_hash(sent: str) -> str:
+    return hashlib.sha1(" ".join(sent.lower().split()).encode()).hexdigest()[:16]
+
+
+def make_examples(rag: RAGPipeline, chunk_ids: list[int], rng: random.Random, k: int, ctx_chars: int,
+                  n: int, per_sentence: int):
+    """Sample up to n conversations from sentences of the given chunks."""
+    cands = []
+    for ci in chunk_ids:
+        for sent in split_sentences(rag.chunks[ci].text):
             words = re.findall(r"[A-Za-z0-9\-]+", sent)
             content = [w for w in words if w.lower() not in STOPWORDS and len(w) > 2]
-            if len(words) < 6 or len(content) < 3 or sent.startswith("#"):
+            if 6 <= len(words) <= 60 and len(content) >= 3 and not sent.startswith("#"):
+                cands.append((sent, words, content))
+    rng.shuffle(cands)
+    examples = []
+    for sent, words, content in cands:
+        if len(examples) >= n:
+            break
+        for _ in range(per_sentence):  # several paraphrased questions per sentence
+            q = make_question(sent, words, content, rng)
+            hits = rag.retrieve(q, k)
+            rng.shuffle(hits)  # citation number must be read from the context, not memorised
+            idx = next((i for i, h in enumerate(hits, 1) if sent in h.chunk.text), None)
+            if idx is None:
                 continue
-            for _ in range(per_sentence):  # several paraphrased questions per sentence
-                q = make_question(sent, words, content, rng)
-                hits = rag.retrieve(q, k)
-                rng.shuffle(hits)  # citation number must be read from the context, not memorised
-                idx = next((i for i, h in enumerate(hits, 1) if sent in h.chunk.text), None)
-                if idx is None:
-                    continue
-                msgs = rag.build_messages(q, hits, max_context_chars=ctx_chars)
-                if sent not in msgs[-1]["content"]:
-                    continue
-                examples.append((msgs, f"{sent} [{idx}]"))
+            msgs = rag.build_messages(q, hits, max_context_chars=ctx_chars)
+            if sent not in msgs[-1]["content"]:
+                continue
+            examples.append((msgs, f"{sent} [{idx}]"))
     return examples
 
 
@@ -93,7 +113,7 @@ def render(tok: Tokenizer, msgs, answer, max_len):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--docs", default="data/sample_docs")
+    ap.add_argument("--docs", default="data/pypi_corpus")
     ap.add_argument("--out", default="checkpoints/tiny")
     ap.add_argument("--steps", type=int, default=600)
     ap.add_argument("--batch", type=int, default=8)
@@ -103,7 +123,8 @@ def main():
     ap.add_argument("--seq-len", type=int, default=1024)
     ap.add_argument("--k", type=int, default=3)
     ap.add_argument("--ctx-chars", type=int, default=1800)
-    ap.add_argument("--q-per-sentence", type=int, default=8)
+    ap.add_argument("--q-per-sentence", type=int, default=3)
+    ap.add_argument("--num-examples", type=int, default=12000)
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--threads", type=int, default=0)
     args = ap.parse_args()
@@ -125,13 +146,24 @@ def main():
     tok = Tokenizer.train_from_iterator(iter(texts * 3 + [scaffold] * 50), args.vocab)
     print(f"tokenizer: vocab {tok.get_vocab_size()} in {time.time() - t0:.1f}s")
 
-    # 2. data
-    examples = make_examples(rag, rng, args.k, args.ctx_chars, args.q_per_sentence)
-    rng.shuffle(examples)
-    n_val = max(8, len(examples) // 20)
-    val, train = examples[:n_val], examples[n_val:]
+    # 2. data: validation uses held-out *documents*, so val loss measures generalisation
+    doc_ids = sorted({c.doc_id for c in rag.chunks})
+    rng.shuffle(doc_ids)
+    val_docs = set(doc_ids[: max(1, len(doc_ids) // 10)])
+    tr_chunks = [i for i, c in enumerate(rag.chunks) if c.doc_id not in val_docs]
+    va_chunks = [i for i, c in enumerate(rag.chunks) if c.doc_id in val_docs]
+    t0 = time.time()
+    train = make_examples(rag, tr_chunks, rng, args.k, args.ctx_chars, args.num_examples, args.q_per_sentence)
+    val = make_examples(rag, va_chunks, rng, args.k, args.ctx_chars, max(64, args.num_examples // 20), 1)
     lens = [len(render(tok, m, a, 10**9)[0]) for m, a in train[:200]]
-    print(f"{len(train)} train / {len(val)} val conversations, mean {sum(lens) / len(lens):.0f} tokens")
+    print(f"{len(train)} train / {len(val)} val (held-out docs) conversations, "
+          f"mean {sum(lens) / len(lens):.0f} tokens, built in {time.time() - t0:.0f}s")
+
+    # fingerprints of every training sentence, so eval can prove the test docs were never seen
+    os.makedirs(args.out, exist_ok=True)
+    hashes = sorted({sentence_hash(s) for t in texts for s in split_sentences(t)})
+    with open(os.path.join(args.out, "train_sentence_hashes.json"), "w") as f:
+        json.dump({"docs_dir": args.docs, "num_docs": len(files), "hashes": hashes}, f)
 
     # 3. model (nanochat architecture, GQA + sliding windows) + masked SFT
     cfg = GPTConfig(sequence_len=args.seq_len, vocab_size=tok.get_vocab_size(), n_layer=args.n_layer,

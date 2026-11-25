@@ -1,0 +1,88 @@
+{"doc": "company_policy.md", "q": "How much is the hotel reimbursement per night?", "a": "180 euros"}
+{"doc": "company_policy.md", "q": "How many sick days do employees get?", "a": "10 paid sick days"}
+{"doc": "company_policy.md", "q": "How many vacation days do full-time staff receive each year?", "a": "24 days"}
+{"doc": "company_policy.md", "q": "When can employees work remotely?", "a": "three days per week"}
+{"doc": "company_policy.md", "q": "What is the daily meal allowance when travelling?", "a": "45 euros"}
+{"doc": "company_policy.md", "q": "How often are engineer laptops replaced?", "a": "every three years"}
+{"doc": "company_policy.md", "q": "How much is the home office stipend?", "a": "600 euros"}
+{"doc": "company_policy.md", "q": "How many unused leave days can be carried over?", "a": "Up to 5 unused days"}
+{"doc": "company_policy.md", "q": "When is a doctor's note required for sick leave?", "a": "longer than three consecutive days"}
+{"doc": "company_policy.md", "q": "How quickly must lost equipment be reported?", "a": "within 48 hours"}
+{"doc": "company_policy.md", "q": "What is the deadline for submitting receipts?", "a": "within 30 days"}
+{"doc": "paged_attention.md", "q": "What does chunked prefill do?", "a": "several pieces"}
+{"doc": "paged_attention.md", "q": "Why does the KV cache use so much memory?", "a": "exhausts GPU memory"}
+{"doc": "paged_attention.md", "q": "How does prefix caching find reusable blocks?", "a": "hash"}
+{"doc": "paged_attention.md", "q": "What happens when the scheduler runs out of memory?", "a": "preempts"}
+{"doc": "paged_attention.md", "q": "How big is the KV cache per token?", "a": "2 x layers x kv_heads x head_dim"}
+{"doc": "paged_attention.md", "q": "What maps logical token positions to physical blocks?", "a": "block table"}
+{"doc": "paged_attention.md", "q": "What is the problem with static batching?", "a": "short requests wait for long ones"}
+{"doc": "paged_attention.md", "q": "When are blocks returned to the free list?", "a": "reference count drops to zero"}
+{"doc": "rag.md", "q": "What does reciprocal rank fusion compute?", "a": "1 / (k + rank)"}
+{"doc": "rag.md", "q": "What is BM25 good at?", "a": "names, codes and rare keywords"}
+{"doc": "rag.md", "q": "What does a reranker do?", "a": "reads the question and passage together"}
+{"doc": "rag.md", "q": "Why do consecutive chunks overlap?", "a": "facts spanning a boundary are not lost"}
+{"doc": "rag.md", "q": "What does dense retrieval capture that keyword search misses?", "a": "paraphrases and synonyms"}
+{"doc": "rag.md", "q": "Which parameters trade memory against recall in HNSW?", "a": "M, ef_construction and ef_search"}
+{"doc": "rag.md", "q": "How many fused candidates does a reranker usually reorder?", "a": "top 20 to 50"}
+{"doc": "transformer.md", "q": "What is group-query attention?", "a": "shares each key/value head"}
+{"doc": "transformer.md", "q": "How do rotary position embeddings work?", "a": "rotate pairs"}
+{"doc": "transformer.md", "q": "How does BPE training build the vocabulary?", "a": "merges the most frequent adjacent pair"}
+{"doc": "transformer.md", "q": "What stops tokens from attending to the future?", "a": "causal mask"}
+{"doc": "transformer.md", "q": "What does top-k sampling keep?", "a": "only the k most likely tokens"}
+{"doc": "transformer.md", "q": "Why is QK normalisation used?", "a": "keep attention logits stable"}
+{"doc": "transformer.md", "q": "When does generation stop?", "a": "end token or after a maximum number of tokens"}
+{"doc": "library_rules.md", "q": "Who can get a free library card?", "a": "lives, works or studies in Riverside County"}
+{"doc": "library_rules.md", "q": "What documents are needed to apply for a library card?", "a": "photo ID and proof of address"}
+{"doc": "library_rules.md", "q": "Who has to sign the application for young children?", "a": "parent or guardian"}
+{"doc": "library_rules.md", "q": "How often must library cards be renewed?", "a": "every two years"}
+{"doc": "library_rules.md", "q": "How many items can a member borrow at once?", "a": "up to 15 items"}
+{"doc": "library_rules.md", "q": "How long can I keep a DVD?", "a": "one week"}
+{"doc": "library_rules.md", "q": "Which items cannot be renewed?", "a": "yellow sticker"}
+{"doc": "library_rules.md", "q": "What is the daily overdue fine for adult materials?", "a": "25 cents per day"}
+{"doc": "library_rules.md", "q": "When is an overdue item treated as lost?", "a": "45 days overdue"}
+{"doc": "library_rules.md", "q": "When are borrowing privileges suspended?", "a": "more than 20 dollars"}
+{"doc": "library_rules.md", "q": "How many people fit in a group study room?", "a": "up to eight people"}
+{"doc": "library_rules.md", "q": "How much does colour printing cost?", "a": "50 cents per page"}
+{"doc": "library_rules.md", "q": "Where can I get free computer tutoring?", "a": "Main Street branch"}
+{"doc": "library_rules.md", "q": "Which branch opens on Sundays?", "a": "only branch open on Sundays"}
+{"doc": "library_rules.md", "q": "What are the Saturday opening hours?", "a": "10 am to 5 pm"}
+{"doc": "solar_battery.md", "q": "What is the usable capacity of the Helios H10?", "a": "10.2 kilowatt-hours"}
+{"doc": "solar_battery.md", "q": "What is the continuous power output of the battery?", "a": "continuous output of 5 kilowatts"}
+{"doc": "solar_battery.md", "q": "How many battery units can be stacked on one inverter?", "a": "Up to four units"}
+{"doc": "solar_battery.md", "q": "Who is allowed to install the battery?", "a": "certified electrician"}
+{"doc": "solar_battery.md", "q": "How far must the battery be from a gas meter?", "a": "90 centimetres"}
+{"doc": "solar_battery.md", "q": "What temperature range can the battery operate in?", "a": "minus 10 to 45 degrees Celsius"}
+{"doc": "solar_battery.md", "q": "How heavy is the battery?", "a": "114 kilograms"}
+{"doc": "solar_battery.md", "q": "What does time-of-use mode do?", "a": "charges from the grid during cheap off-peak hours"}
+{"doc": "solar_battery.md", "q": "How much capacity does backup reserve mode keep by default?", "a": "20 percent"}
+{"doc": "solar_battery.md", "q": "How fast does the battery switch to backup power?", "a": "under 20 milliseconds"}
+{"doc": "solar_battery.md", "q": "Which loads should be excluded from the backup circuit?", "a": "electric ovens and car chargers"}
+{"doc": "solar_battery.md", "q": "What maintenance does the battery need?", "a": "keeping the air vents free of dust"}
+{"doc": "solar_battery.md", "q": "How long is the battery warranty?", "a": "ten years"}
+{"doc": "solar_battery.md", "q": "What does a blinking red light mean?", "a": "indicates a fault"}
+{"doc": "clinic_info.md", "q": "How long is a routine appointment?", "a": "15 minutes"}
+{"doc": "clinic_info.md", "q": "What should I book if I have several problems to discuss?", "a": "double appointment"}
+{"doc": "clinic_info.md", "q": "How early should patients arrive?", "a": "ten minutes early"}
+{"doc": "clinic_info.md", "q": "What happens after three missed appointments?", "a": "asked to register elsewhere"}
+{"doc": "clinic_info.md", "q": "When are same-day slots released?", "a": "8 am"}
+{"doc": "clinic_info.md", "q": "Which children are always seen on the same day?", "a": "under five with a fever"}
+{"doc": "clinic_info.md", "q": "What should I do for chest pain?", "a": "call the emergency number"}
+{"doc": "clinic_info.md", "q": "How far ahead should repeat prescriptions be requested?", "a": "three working days"}
+{"doc": "clinic_info.md", "q": "What is the maximum supply of controlled medicines?", "a": "30 days"}
+{"doc": "clinic_info.md", "q": "When are blood samples taken?", "a": "between 8 am and 11 am"}
+{"doc": "clinic_info.md", "q": "How long do patients fast before some blood tests?", "a": "12 hours"}
+{"doc": "clinic_info.md", "q": "How long do test results take?", "a": "within five working days"}
+{"doc": "clinic_info.md", "q": "Who is offered the flu vaccine?", "a": "adults over 65"}
+{"doc": "clinic_info.md", "q": "How early should travel vaccines be arranged?", "a": "eight weeks before departure"}
+{"doc": "alpine_marmot.md", "q": "Where do Alpine marmots live?", "a": "high meadows of the Alps"}
+{"doc": "alpine_marmot.md", "q": "How much can an adult marmot weigh in late summer?", "a": "up to 8 kilograms"}
+{"doc": "alpine_marmot.md", "q": "At what altitudes are marmots found?", "a": "between 800 and 3200 metres"}
+{"doc": "alpine_marmot.md", "q": "How long can burrow tunnels be?", "a": "up to ten metres long"}
+{"doc": "alpine_marmot.md", "q": "Which predators do marmots watch for?", "a": "golden eagles and foxes"}
+{"doc": "alpine_marmot.md", "q": "How large are marmot family groups?", "a": "up to twenty animals"}
+{"doc": "alpine_marmot.md", "q": "How many young does the dominant female have?", "a": "between one and seven young"}
+{"doc": "alpine_marmot.md", "q": "What does a single short whistle warn of?", "a": "warns of an eagle"}
+{"doc": "alpine_marmot.md", "q": "How long do marmots hibernate?", "a": "six months"}
+{"doc": "alpine_marmot.md", "q": "How low does the heart rate fall during hibernation?", "a": "as few as five"}
+{"doc": "alpine_marmot.md", "q": "What do marmots eat in summer?", "a": "grasses, herbs, flowers and roots"}
+{"doc": "alpine_marmot.md", "q": "Why do marmots rarely drink?", "a": "fresh plants and morning dew"}

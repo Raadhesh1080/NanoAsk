@@ -1,11 +1,16 @@
 """Engine correctness: paged + batched inference must match nanochat's dense forward."""
-import torch
+import os
+
 import pytest
+import torch
 
 from nanoask.engine.block_manager import BlockManager
 from nanoask.engine.llm_engine import EngineConfig, LLMEngine
 from nanoask.engine.sequence import SamplingParams, Sequence
 from nanoask.model.gpt import GPT, GPTConfig
+
+# NANOASK_TEST_DEVICE=cuda runs these equivalence tests on a GPU (see notebooks/gpu_benchmark.ipynb)
+DEVICE = torch.device(os.environ.get("NANOASK_TEST_DEVICE", "cpu"))
 
 
 class FakeTok:
@@ -31,13 +36,13 @@ def tiny_model(window_pattern="SL", n_kv_head=2, seq_len=128):
         for p in m.parameters():
             p.add_(torch.randn_like(p) * 0.05)
         m.smear_lambda.fill_(0.5)
-    return m.eval()
+    return m.to(DEVICE).eval()
 
 
 def greedy_dense(model, prompt, n):
     ids = list(prompt)
     for _ in range(n):
-        logits = model(torch.tensor([ids]))[0, -1]
+        logits = model(torch.tensor([ids], device=DEVICE))[0, -1]
         ids.append(int(logits.argmax()))
     return ids[len(prompt):]
 
@@ -62,7 +67,7 @@ def test_paged_batched_matches_dense(pattern):
 def test_logits_close():
     model = tiny_model("L")
     prompt = list(range(3, 30))
-    dense = model(torch.tensor([prompt]))[0, -1]
+    dense = model(torch.tensor([prompt], device=DEVICE))[0, -1]
     eng = LLMEngine(model, FakeTok(), EngineConfig(block_size=4, num_kvcache_blocks=32))
     seq = Sequence(prompt, SamplingParams(temperature=0, max_tokens=1))
     seq.block_table = list(range(seq.num_blocks))

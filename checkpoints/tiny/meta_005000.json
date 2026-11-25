@@ -1,26 +1,27 @@
 {
   "model_config": {
     "sequence_len": 1024,
-    "vocab_size": 1811,
+    "vocab_size": 2048,
     "n_layer": 6,
     "n_head": 3,
     "n_kv_head": 1,
     "n_embd": 192,
     "window_pattern": "SL"
   },
-  "step": 3000,
+  "step": 5000,
   "train": {
-    "docs": "data/sample_docs",
+    "docs": "data/pypi_corpus",
     "out": "checkpoints/tiny",
-    "steps": 3000,
+    "steps": 5000,
     "batch": 8,
     "vocab": 2048,
     "n_layer": 6,
     "n_embd": 192,
     "seq_len": 1024,
-    "k": 3,
-    "ctx_chars": 1800,
-    "q_per_sentence": 12,
+    "k": 2,
+    "ctx_chars": 1200,
+    "q_per_sentence": 3,
+    "num_examples": 16000,
     "lr": 0.002,
     "threads": 0
   }

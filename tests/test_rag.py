@@ -127,3 +127,26 @@ def test_grounding_check_and_citation_fix():
     assert g["supported"] and not g["relevant"] and not g["grounded"]  # copied, but wrong sentence
     g = rag.ground_answer(q, "The moon is made of cheese and rockets.", hits)
     assert not g["supported"] and not g["grounded"]                  # hallucination
+
+
+def test_hnsw_recall_on_real_chunk_embeddings():
+    """Real text, real LSA embeddings: READMEs of the installed Python packages + the sample docs."""
+    import importlib.metadata as md
+    from nanoask.rag.documents import make_chunks
+    from nanoask.rag.embeddings import LSAEmbedder
+
+    chunker = RecursiveChunker()
+    texts = [(d.metadata["Name"], d.metadata.get_payload() or "") for d in md.distributions()]
+    texts = [(n, t) for n, t in texts if len(t.split()) > 200] + [load_bytes(p.name, p.read_bytes()) for p in DOCS.glob("*.md")]
+    chunks = [c.text for n, t in texts for c in make_chunks(n, t, chunker)]
+    assert len(chunks) > 300, "not enough installed-package READMEs to build a meaningful index"
+    emb = LSAEmbedder(dim=128)
+    emb.fit(chunks)
+    X = emb.encode(chunks)
+    idx = HNSWIndex(emb.dim, M=16, ef_construction=100, ef_search=64)
+    idx.add(X)
+    rng = np.random.default_rng(0)
+    queries = emb.encode([chunks[i][:200] for i in rng.choice(len(chunks), 100, replace=False)])
+    truth = np.argsort(-(queries @ X.T), axis=1)[:, :10]
+    recall = np.mean([len({i for i, _ in idx.search(q, 10)} & set(t)) / 10 for q, t in zip(queries, truth)])
+    assert recall > 0.95, recall

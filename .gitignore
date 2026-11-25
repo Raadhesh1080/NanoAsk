@@ -6,3 +6,4 @@ data/index.json
 # keep only the small demo model in git
 checkpoints/*
 !checkpoints/tiny/
+data/pypi_corpus/

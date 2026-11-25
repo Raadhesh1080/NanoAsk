@@ -1,21 +1,33 @@
 """
-End-to-end QA evaluation on hand-written questions (not produced by the training generator).
+End-to-end QA evaluation on the handwritten question set (data/eval/qa.jsonl, 88 questions over
+the 8 documents in data/sample_docs).
 
-Reports, per question and overall:
-  retrieval@1   the passage holding the answer is ranked first
-  retrieval@k   ...is anywhere in the prompt
-  llm           the raw model answer contains the expected fact
-  auto          the served answer (grounding check + extractive fallback) contains it
-  extractive    the model-free answer contains it
-  grounded      the raw model answer passed the grounding check
+Leak check: if the checkpoint directory has train_sentence_hashes.json (written by
+scripts/train_tiny.py), every sentence of the test documents is checked against the training
+sentences and the overlap is printed. A non-zero overlap means the score is contaminated.
 
-    python scripts/eval_qa.py                         # uses checkpoints/tiny
+Columns (fraction of questions whose answer contains the expected fact):
+  ret@1      the top retrieved passage contains the fact
+  ret@k      some passage in the prompt contains it
+  llm        raw model answer
+  auto       served answer, strict rule (model answer kept only if >= as relevant as extraction)
+  auto0.5    served answer with the old lenient rule (model answer kept if >= half as relevant)
+  ext@1      model-free extractive answer, first sentence only (same length as a model answer)
+  ext@3      model-free extractive answer, up to 3 sentences (the server's default)
+  grounded   raw model answer passed the strict grounding check
+
+    python scripts/eval_qa.py
+    python scripts/eval_qa.py --distractors data/pypi_corpus      # 225 unrelated docs in the index too
     python scripts/eval_qa.py --checkpoint ~/.cache/nanochat/chatsft_checkpoints/d20 --device cuda
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import re
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -25,26 +37,23 @@ from nanoask.model.loader import load_checkpoint  # noqa: E402
 from nanoask.rag.pipeline import RAGPipeline, RetrievalConfig  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
+COLS = ["ret@1", "ret@k", "llm", "auto", "auto0.5", "ext@1", "ext@3", "grounded"]
 
-# (question, substring that a correct answer must contain)
-QA = [
-    ("How much is the hotel reimbursement per night?", "180 euros"),
-    ("How many sick days do employees get?", "10 paid sick days"),
-    ("How many vacation days do full-time staff receive each year?", "24 days"),
-    ("When can employees work remotely?", "three days per week"),
-    ("What is the daily meal allowance when travelling?", "45 euros"),
-    ("How often are engineer laptops replaced?", "every three years"),
-    ("How much is the home office stipend?", "600 euros"),
-    ("What does chunked prefill do?", "several pieces"),
-    ("Why does the KV cache use so much memory?", "exhausts GPU memory"),
-    ("How does prefix caching find reusable blocks?", "hash"),
-    ("What happens when the scheduler runs out of memory?", "preempts"),
-    ("What does reciprocal rank fusion compute?", "1 / (k + rank)"),
-    ("What is BM25 good at?", "names, codes and rare keywords"),
-    ("What does a reranker do?", "reads the question and passage together"),
-    ("What is group-query attention?", "shares each key/value head"),
-    ("How do rotary position embeddings work?", "rotate pairs"),
-]
+
+def sentence_hash(sent: str) -> str:  # must match scripts/train_tiny.py
+    return hashlib.sha1(" ".join(sent.lower().split()).encode()).hexdigest()[:16]
+
+
+def leak_check(ckpt: str, docs_dir: Path) -> str:
+    f = Path(ckpt) / "train_sentence_hashes.json"
+    if not f.exists():
+        return "UNKNOWN (checkpoint has no train_sentence_hashes.json; cannot prove the test docs were unseen)"
+    train = set(json.loads(f.read_text())["hashes"])
+    sents = [s.strip() for p in docs_dir.glob("*") if p.is_file()
+             for s in re.split(r"(?<=[.!?])\s+|\n+", p.read_text()) if len(s.split()) >= 5]
+    overlap = sum(sentence_hash(s) in train for s in sents)
+    verdict = "CLEAN" if overlap == 0 else "CONTAMINATED"
+    return f"{verdict}: {overlap} of {len(sents)} test-document sentences occur in the training data"
 
 
 def main():
@@ -53,47 +62,66 @@ def main():
     ap.add_argument("--tokenizer-dir")
     ap.add_argument("--device")
     ap.add_argument("--docs", default=str(ROOT / "data" / "sample_docs"))
+    ap.add_argument("--qa", default=str(ROOT / "data" / "eval" / "qa.jsonl"))
+    ap.add_argument("--distractors", help="extra unrelated documents to add to the index")
     ap.add_argument("--max-tokens", type=int, default=80)
+    ap.add_argument("--json", help="write per-question results here")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
+    qa = [json.loads(l) for l in open(args.qa) if l.strip()]
+    print(f"Leak check: {leak_check(args.checkpoint, Path(args.docs))}")
     model, tok, meta = load_checkpoint(args.checkpoint, args.tokenizer_dir, device=args.device)
     train = meta.get("train", {})
     k, ctx_chars = train.get("k", 4), train.get("ctx_chars", 6000)
     rag = RAGPipeline(retrieval=RetrievalConfig(final_k=k))
-    for f in sorted(Path(args.docs).glob("*")):
-        if f.is_file():
-            rag.ingest_file(f.name, f.read_bytes())
+    files = [f for f in sorted(Path(args.docs).glob("*")) if f.is_file()]
+    if args.distractors:
+        files += [f for f in sorted(Path(args.distractors).glob("*")) if f.is_file()]
+    rag.add_chunks([c for f in files for c in _chunks(rag, f)])
+    print(f"index: {len(files)} documents, {len(rag.chunks)} chunks | model: {args.checkpoint} | k={k}")
     engine = LLMEngine(model, tok, EngineConfig(max_model_len=model.config.sequence_len))
 
-    hits = [rag.retrieve(q) for q, _ in QA]
+    hits = [rag.retrieve(r["q"]) for r in qa]
     prompts = []
-    for (q, _), h in zip(QA, hits):
-        ids = tok.render_for_completion(rag.build_messages(q, h, max_context_chars=ctx_chars))
+    for r, h in zip(qa, hits):
+        ids = tok.render_for_completion(rag.build_messages(r["q"], h, max_context_chars=ctx_chars))
         prompts.append(ids[-(engine.config.max_model_len - args.max_tokens - 1):])
     sp = SamplingParams(temperature=0, max_tokens=args.max_tokens, stop_token_ids=tok.stop_token_ids)
-    outs = engine.generate(prompts, sp)   # all questions in one continuous batch
+    outs = engine.generate(prompts, sp)  # all questions in one continuous batch
 
-    keys = ["retrieval@1", "retrieval@k", "llm", "auto", "extractive", "grounded"]
-    totals = dict.fromkeys(keys, 0)
-    print(f"{'question':58s} " + " ".join(f"{c[:6]:>6s}" for c in keys))
-    for (q, fact), h, o in zip(QA, hits, outs):
-        raw = o["text"].strip()
-        ext = rag.extractive_answer(q, h)
-        g = rag.ground_answer(q, raw, h)
-        auto = (g["answer"] if g["grounded"] else ext)
-        row = {
-            "retrieval@1": bool(h) and fact in h[0].chunk.text,
-            "retrieval@k": any(fact in x.chunk.text for x in h),
-            "llm": fact in raw, "auto": fact in auto, "extractive": fact in ext, "grounded": g["grounded"],
-        }
-        for c in keys:
-            totals[c] += row[c]
-        print(f"{q[:58]:58s} " + " ".join(f"{'✓' if row[c] else '·':>6s}" for c in keys))
+    rows, by_doc = [], defaultdict(lambda: defaultdict(int))
+    for r, h, o in zip(qa, hits, outs):
+        fact, raw = r["a"], o["text"].strip()
+        ext3 = rag.extractive_answer(r["q"], h)
+        ext1 = rag.extractive_answer(r["q"], h, max_sentences=1)
+        strict = rag.ground_answer(r["q"], raw, h, 1.0)
+        lenient = rag.ground_answer(r["q"], raw, h, 0.5)
+        auto = strict["answer"] if strict["grounded"] else ext3
+        auto05 = lenient["answer"] if lenient["grounded"] else ext3
+        row = {"ret@1": bool(h) and fact in h[0].chunk.text, "ret@k": any(fact in x.chunk.text for x in h),
+               "llm": fact in raw, "auto": fact in auto, "auto0.5": fact in auto05,
+               "ext@1": fact in ext1, "ext@3": fact in ext3, "grounded": strict["grounded"]}
+        rows.append({**r, **row, "llm_answer": raw, "auto_answer": auto})
+        by_doc[r["doc"]]["n"] += 1
+        for c in COLS:
+            by_doc[r["doc"]][c] += row[c]
         if args.verbose:
-            print(f"    llm : {raw[:150]}\n    auto: {auto[:150]}")
-    n = len(QA)
-    print(f"{'TOTAL':58s} " + " ".join(f"{totals[c] / n:6.0%}" for c in keys))
+            print(f"{r['q']}\n    llm : {raw[:140]}\n    auto: {auto[:140]}")
+
+    n = len(rows)
+    print(f"\n{'document':22s} {'n':>3s} " + " ".join(f"{c:>8s}" for c in COLS))
+    for d, s in sorted(by_doc.items()):
+        print(f"{d:22s} {s['n']:3d} " + " ".join(f"{s[c] / s['n']:8.0%}" for c in COLS))
+    print(f"{'TOTAL':22s} {n:3d} " + " ".join(f"{sum(r[c] for r in rows) / n:8.0%}" for c in COLS))
+    if args.json:
+        Path(args.json).write_text(json.dumps(rows, indent=1))
+
+
+def _chunks(rag, path):
+    from nanoask.rag.documents import load_path, make_chunks
+    title, text = load_path(path)
+    return make_chunks(title, text, rag.chunker, path.name)
 
 
 if __name__ == "__main__":

@@ -220,13 +220,17 @@ class RAGPipeline:
         return " ".join(picked) or hits[0].chunk.text[:300] + " [1]"
 
     @staticmethod
-    def ground_answer(question: str, answer: str, hits: list[Hit]) -> dict:
+    def ground_answer(question: str, answer: str, hits: list[Hit], min_relative_relevance: float = 1.0) -> dict:
         """
         Post-generation faithfulness check (the generator may be a small model):
           * every answer sentence must be supported by some passage (>= 70% of its terms occur there);
             its citation is rewritten to the passage that actually supports it;
           * the supported content must be about the question: its question-term overlap must be at
-            least half of the best sentence available in the retrieved passages.
+            least `min_relative_relevance` x that of the best sentence in the retrieved passages
+            (the sentence the extractive answer would lead with).
+        The default of 1.0 means the model's answer is only preferred when it is at least as on-topic as
+        the extractive one, so Auto mode can't pick a less relevant sentence than extraction would.
+        Earlier versions used 0.5, which let a related-but-wrong sentence through.
         """
         q = set(tokenize(question))
         sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+(?=[A-Z\[])|\n+", re.sub(r"\s*\[\d+\]", "", answer))
@@ -246,10 +250,13 @@ class RAGPipeline:
         best_avail = 0.0
         for h in hits:
             for s in re.split(r"(?<=[.!?])\s+|\n+", h.chunk.text):
-                best_avail = max(best_avail, len(q & set(tokenize(s))) / (len(q) or 1))
-        relevant = rel >= 0.5 * best_avail and rel > 0
+                toks = tokenize(s)
+                if len(toks) >= 4:  # same sentence filter as extractive_answer
+                    best_avail = max(best_avail, len(q & set(toks)) / (len(q) or 1))
+        relevant = rel > 0 and rel >= min_relative_relevance * best_avail - 1e-9
         return {"answer": " ".join(out), "supported": bool(sents) and supported,
-                "relevant": relevant, "grounded": bool(sents) and supported and relevant}
+                "relevant": relevant, "grounded": bool(sents) and supported and relevant,
+                "relevance": round(rel, 4), "best_available_relevance": round(best_avail, 4)}
 
     def stats(self):
         return {"chunks": len(self.chunks), "documents": len({c.doc_id for c in self.chunks}),
