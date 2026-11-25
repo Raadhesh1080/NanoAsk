@@ -46,7 +46,8 @@ class LLMEngine:
         config.max_model_len = min(config.max_model_len, model.config.sequence_len * 10)
         Sequence.block_size = config.block_size
         self.runner = ModelRunner(model, config.block_size, config.num_kvcache_blocks,
-                                  config.kv_cache_mb, config.gpu_memory_utilization, config.seed)
+                                  config.kv_cache_mb, config.gpu_memory_utilization, config.seed,
+                                  max_num_batched_tokens=config.max_num_batched_tokens)
         self.scheduler = Scheduler(config.max_num_seqs, config.max_num_batched_tokens, config.max_model_len,
                                    self.runner.num_kvcache_blocks, config.block_size,
                                    eos=tokenizer.encode_special("<|assistant_end|>"))

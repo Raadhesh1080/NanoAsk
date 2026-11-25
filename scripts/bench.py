@@ -31,9 +31,11 @@ from nanoask.model.loader import load_checkpoint, pick_device  # noqa: E402
 PRESETS = {
     # random-weight models: throughput does not depend on what the weights are
     "cpu": dict(model=dict(n_layer=6, n_head=4, n_kv_head=2, n_embd=256, vocab_size=4096),
-                num_requests=24, min_input=50, max_input=300, max_output=64, max_model_len=1024),
+                num_requests=24, min_input=50, max_input=300, max_output=64, max_model_len=1024,
+                sequential_requests=24),
     "gpu": dict(model=dict(n_layer=12, n_head=12, n_kv_head=4, n_embd=768, vocab_size=32768),
-                num_requests=128, min_input=100, max_input=1000, max_output=256, max_model_len=2048),
+                num_requests=128, min_input=100, max_input=1000, max_output=256, max_model_len=2048,
+                sequential_requests=16),
 }
 
 
@@ -60,10 +62,12 @@ def main():
     ap.add_argument("--max-model-len", type=int)
     ap.add_argument("--max-num-seqs", type=int, default=64)
     ap.add_argument("--skip-sequential", action="store_true", help="only run the batched pass")
+    ap.add_argument("--sequential-requests", type=int,
+                    help="how many requests the one-at-a-time baseline serves (it reports a rate, so a sample suffices)")
     ap.add_argument("--out", help="also write the results as a Markdown table here")
     args = ap.parse_args()
     pre = PRESETS[args.preset]
-    for key in ("num_requests", "min_input", "max_input", "max_output", "max_model_len"):
+    for key in ("num_requests", "min_input", "max_input", "max_output", "max_model_len", "sequential_requests"):
         if getattr(args, key) is None:
             setattr(args, key, pre[key])
 
@@ -104,20 +108,40 @@ def main():
             torch.cuda.synchronize()
 
     eng = make()
+    print(f"KV cache: {eng.runner.num_kvcache_blocks} blocks ({eng.runner.kv_cache_bytes / 2**30:.2f} GiB)", flush=True)
     eng.generate([prompts[0][:32]], SamplingParams(max_tokens=8))  # warmup
-    seq_time = None
+
+    def run_batched(engine, ps, ss, label):
+        """Like engine.generate, but prints progress so long runs don't look frozen."""
+        for p_, s_ in zip(ps, ss):
+            engine.add_request(p_, s_)
+        t0 = last = time.perf_counter()
+        while not engine.is_finished():
+            engine.step()
+            if time.perf_counter() - last > 15:
+                last = time.perf_counter()
+                done = len(ps) - len(engine.scheduler.waiting) - len(engine.scheduler.running)
+                print(f"  {label}: {done}/{len(ps)} requests done, {last - t0:.0f}s", flush=True)
+
+    seq_time = seq_out = None
     if not args.skip_sequential:
+        n_seq = min(args.sequential_requests, len(prompts))
+        seq_out = sum(outs[:n_seq])
+        print(f"one request at a time: {n_seq} requests ...", flush=True)
         sync()
         t = time.perf_counter()
-        for p, sp in zip(prompts, sps):
+        for i, (p, sp) in enumerate(zip(prompts[:n_seq], sps[:n_seq]), 1):
             eng.generate([p], sp)
+            if i % 4 == 0:
+                print(f"  sequential: {i}/{n_seq} requests done, {time.perf_counter() - t:.0f}s", flush=True)
         sync()
         seq_time = time.perf_counter() - t
 
+    print(f"continuous batching: {len(prompts)} requests ...", flush=True)
     eng = make()
     sync()
     t = time.perf_counter()
-    eng.generate(prompts, sps)
+    run_batched(eng, prompts, sps, "batched")
     sync()
     bat_time = time.perf_counter() - t
 
@@ -128,10 +152,13 @@ def main():
     mean_len = sum(len(p) + o for p, o in zip(prompts, outs)) / len(prompts)
 
     lines = []
+    seq_rate = seq_out / seq_time if seq_time else None
+    bat_rate = total_out / bat_time
     if seq_time:
-        lines.append(f"sequential : {seq_time:7.2f}s  {total_out / seq_time:9.1f} output tok/s")
-    lines.append(f"continuous : {bat_time:7.2f}s  {total_out / bat_time:9.1f} output tok/s"
-                 + (f"   (x{seq_time / bat_time:.1f})" if seq_time else "")
+        lines.append(f"sequential : {seq_rate:9.1f} output tok/s  ({seq_out} tokens in {seq_time:.2f}s, "
+                     f"{args.sequential_requests if args.sequential_requests < len(prompts) else len(prompts)} requests)")
+    lines.append(f"continuous : {bat_rate:9.1f} output tok/s  ({total_out} tokens in {bat_time:.2f}s)"
+                 + (f"   x{bat_rate / seq_rate:.1f}" if seq_time else "")
                  + f"   max batch {eng.stats.max_batch_size}, preemptions {eng.scheduler.num_preemptions}")
     lines.append(f"KV memory, all requests resident: contiguous {contiguous / 2**20:.1f} MB "
                  f"(max_model_len={max_len} tokens reserved per request) vs paged {paged / 2**20:.1f} MB "
@@ -144,10 +171,11 @@ def main():
               f"**Model:** {model_desc}, {n_params:.1f}M params  ",
               f"**Workload:** {len(prompts)} requests, prompts {args.min_input}-{args.max_input} tokens, "
               f"outputs {args.max_output // 2}-{args.max_output} tokens, max_model_len {max_len}", "",
-              "| | time | output tok/s |", "|---|---|---|"]
+              "| | requests timed | output tok/s |", "|---|---|---|"]
         if seq_time:
-            md.append(f"| one request at a time | {seq_time:.2f}s | {total_out / seq_time:.1f} |")
-        md.append(f"| continuous batching | {bat_time:.2f}s | {total_out / bat_time:.1f} |")
+            md.append(f"| one request at a time | {min(args.sequential_requests, len(prompts))} | {seq_rate:.1f} |")
+        md.append(f"| continuous batching | {len(prompts)} | **{bat_rate:.1f}**"
+                  + (f" ({bat_rate / seq_rate:.1f}x)" if seq_time else "") + " |")
         md += ["", f"KV memory with all requests resident: {contiguous / 2**20:.1f} MB if each request reserves "
                f"max_model_len={max_len} tokens, {paged / 2**20:.1f} MB paged "
                f"({contiguous / paged:.1f}x less; mean {mean_len:.0f} tokens per request)."]

@@ -149,16 +149,18 @@ At this size, brute force is faster than either HNSW. Approximate search only pa
 
 CPU preset: random-weight nanochat GPT (6 layers, 256-d, 8.0M params; throughput doesn't depend on the weight values), 24 requests, prompts 50–300 tokens, outputs 32–64 tokens, `max_model_len = 1024`, KV block size 16.
 
-| | time | output tok/s |
-|---|---|---|
-| one request at a time | 5.15 s | 219 |
-| continuous batching | 1.30 s | **868 (4.0×)** |
+| | output tok/s |
+|---|---|
+| one request at a time | 219–258 |
+| continuous batching | 868–910 |
+
+Continuous batching gave **3.5–4.0×** the throughput across two runs (the range is run-to-run noise on a shared CPU; the latest run is in `results/bench_cpu.md`).
 
 **KV memory with all 24 requests resident: 28.7 MB paged vs 144.0 MB if every request reserves `max_model_len = 1024` tokens, i.e. 5.0× less.** The requests use 197 tokens each on average, so the saving scales with `max_model_len` ÷ actual length: with `max_model_len = 2048` the same workload would need 10× less.
 
 ### GPU results
 
-Not yet measured. `notebooks/gpu_benchmark.ipynb` runs the GPU correctness tests, `bench.py --preset gpu` (12-layer/768-d model, 128 requests, prompts 100–1000 tokens, `max_model_len = 2048`) and the QA eval on a free Colab or Kaggle T4, and prints a table to paste here.
+Not yet measured. `notebooks/gpu_benchmark.ipynb` runs the GPU correctness tests, `bench.py --preset gpu` (12-layer/768-d model, 128 requests, prompts 100–1000 tokens, `max_model_len = 2048`; the one-at-a-time baseline is timed on 16 of the 128 requests, since it reports a rate) and the QA eval on a free Colab or Kaggle T4, and prints a table to paste here.
 
 ## Honest limitations
 

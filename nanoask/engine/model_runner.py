@@ -24,12 +24,14 @@ def kv_bytes_per_block(model: GPT, block_size: int, dtype: torch.dtype) -> int:
 
 class ModelRunner:
     def __init__(self, model: GPT, block_size: int, num_kvcache_blocks: int | None = None,
-                 kv_cache_mb: float = 256, gpu_memory_utilization: float = 0.9, seed: int = 0):
+                 kv_cache_mb: float = 256, gpu_memory_utilization: float = 0.9, seed: int = 0,
+                 max_num_batched_tokens: int = 2048):
         self.model = model.eval()
         self.device = model.device
         self.block_size = block_size
         self.kv_dtype = model.dtype
         self.generator = torch.Generator(device=self.device).manual_seed(seed)
+        self.max_num_batched_tokens = max_num_batched_tokens
         if num_kvcache_blocks is None:
             num_kvcache_blocks = self._blocks_from_budget(kv_cache_mb, gpu_memory_utilization)
         assert num_kvcache_blocks > 0
@@ -39,12 +41,35 @@ class ModelRunner:
     def _blocks_from_budget(self, kv_cache_mb, gpu_memory_utilization):
         per_block = kv_bytes_per_block(self.model, self.block_size, self.kv_dtype)
         if self.device.type == "cuda":
-            # nano-vllm style: give the KV cache whatever is left under the utilisation cap
+            # nano-vllm style: run the largest batch the scheduler can send *before* allocating the
+            # cache, measure the activation peak, and give the KV cache what is left under the cap.
+            # (Without this the cache took 90% of the GPU and the first big prefill ran out of memory.)
+            act_peak = self._warmup_peak_bytes()
             free, total = torch.cuda.mem_get_info(self.device)
-            budget = total * gpu_memory_utilization - (total - free)
+            headroom = 1.5 * act_peak + 512 * 2**20   # paged prefill pads queries/keys; keep slack
+            budget = total * gpu_memory_utilization - (total - free) - headroom
+            if budget < per_block:
+                raise RuntimeError(f"not enough GPU memory for a KV cache: {free / 2**30:.1f} GiB free, "
+                                   f"activations need ~{headroom / 2**30:.1f} GiB. Lower --max-num-batched-tokens.")
         else:
             budget = kv_cache_mb * 2**20
         return int(budget // per_block)
+
+    @torch.inference_mode()
+    def _warmup_peak_bytes(self) -> int:
+        """Peak extra memory of a dense forward over max_num_batched_tokens tokens (as nano-vllm's warmup)."""
+        seq_len = min(self.max_num_batched_tokens, self.model.config.sequence_len)
+        num_seqs = max(1, self.max_num_batched_tokens // seq_len)
+        torch.cuda.synchronize(self.device)
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats(self.device)
+        before = torch.cuda.memory_allocated(self.device)
+        ids = torch.zeros(num_seqs, seq_len, dtype=torch.long, device=self.device)
+        self.model(ids)
+        torch.cuda.synchronize(self.device)
+        peak = torch.cuda.max_memory_allocated(self.device) - before
+        torch.cuda.empty_cache()
+        return peak
 
     def _allocate_kv_cache(self):
         c = self.model.config
