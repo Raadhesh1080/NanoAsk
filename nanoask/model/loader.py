@@ -21,7 +21,11 @@ from nanoask.model.tokenizer import Tokenizer
 
 def pick_device(device: str | None = None) -> torch.device:
     if device:
-        return torch.device(device)
+        dev = torch.device(device)
+        if dev.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError(f"--device {device} requested, but no CUDA GPU is available to PyTorch "
+                               f"(torch {torch.__version__}). On Colab, switch the runtime to a T4 GPU.")
+        return dev
     if torch.cuda.is_available():
         return torch.device("cuda")
     if torch.backends.mps.is_available():
