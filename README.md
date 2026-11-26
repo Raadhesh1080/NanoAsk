@@ -169,7 +169,9 @@ Run with `notebooks/gpu_benchmark.ipynb`; raw output in `results/bench_t4.md`. G
 
 **KV memory with all 128 requests resident: 1,086.8 MB paged vs 3,072.0 MB if every request reserves `max_model_len = 2048` tokens, i.e. 2.8× less.** These requests average 716 tokens, so the saving is smaller than in the CPU run (197-token requests, 5.0×): it scales with `max_model_len` ÷ actual length.
 
-The QA evaluation on the T4 (`eval_qa.py --device cuda`) gives exactly the same results as on CPU, row for row (95% ret@1, 93% Auto), so the CUDA bf16 path produces the same answers.
+During the batched run the scheduler filled all 64 batch slots (`--max-num-seqs 64`) with no preemptions; the KV cache was sized at 9.83 GiB after the warm-up pass.
+
+Correctness on the T4: the engine and bf16 tests (`NANOASK_TEST_DEVICE=cuda pytest tests/test_engine.py tests/test_gpu.py`) all pass (10/10), including paged-vs-dense token equivalence, prefix caching and preemption on CUDA. The QA evaluation (`eval_qa.py --device cuda`) gives exactly the same results as on CPU, row for row (95% ret@1, 93% Auto).
 
 Absolute GPU throughput is modest because attention is plain PyTorch (gather + masked SDPA) rather than flash-attn, and there are no CUDA graphs; those are the obvious next optimisations.
 
