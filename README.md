@@ -109,7 +109,7 @@ python -m nanoask.server --embedder st:BAAI/bge-m3 --reranker ce:BAAI/bge-rerank
 
 ## Results
 
-All numbers below were measured on a 4-core x86 CPU (no GPU), torch 2.15, with nothing else running.
+Unless marked as GPU results, the numbers below were measured on a 4-core x86 CPU, torch 2.15, with nothing else running.
 
 ### Question answering (`scripts/eval_qa.py`)
 
@@ -158,14 +158,25 @@ Continuous batching gave **3.5–4.0×** the throughput across two runs (the ran
 
 **KV memory with all 24 requests resident: 28.7 MB paged vs 144.0 MB if every request reserves `max_model_len = 1024` tokens, i.e. 5.0× less.** The requests use 197 tokens each on average, so the saving scales with `max_model_len` ÷ actual length: with `max_model_len = 2048` the same workload would need 10× less.
 
-### GPU results
+### GPU results (Kaggle Tesla T4)
 
-Not yet measured. `notebooks/gpu_benchmark.ipynb` runs the GPU correctness tests, `bench.py --preset gpu` (12-layer/768-d model, 128 requests, prompts 100–1000 tokens, `max_model_len = 2048`; the one-at-a-time baseline is timed on 16 of the 128 requests, since it reports a rate) and the QA eval on a free Colab or Kaggle T4, and prints a table to paste here.
+Run with `notebooks/gpu_benchmark.ipynb`; raw output in `results/bench_t4.md`. GPU preset: random-weight nanochat GPT (12 layers, 768-d, 176.2M params, bf16), 128 requests, prompts 100–1000 tokens, outputs 128–256 tokens, `max_model_len = 2048`.
+
+| | requests timed | output tok/s |
+|---|---|---|
+| one request at a time | 16 (it reports a rate, so a sample suffices) | 40.8 |
+| continuous batching | 128 | **254.2 (6.2×)** |
+
+**KV memory with all 128 requests resident: 1,086.8 MB paged vs 3,072.0 MB if every request reserves `max_model_len = 2048` tokens, i.e. 2.8× less.** These requests average 716 tokens, so the saving is smaller than in the CPU run (197-token requests, 5.0×): it scales with `max_model_len` ÷ actual length.
+
+The QA evaluation on the T4 (`eval_qa.py --device cuda`) gives exactly the same results as on CPU, row for row (95% ret@1, 93% Auto), so the CUDA bf16 path produces the same answers.
+
+Absolute GPU throughput is modest because attention is plain PyTorch (gather + masked SDPA) rather than flash-attn, and there are no CUDA graphs; those are the obvious next optimisations.
 
 ## Honest limitations
 
 - **The bundled demo model can't answer questions** (see Results). Auto mode falls back to extractive answers, so the server is still useful, but generated answers need a real nanochat checkpoint.
-- **The GPU path is untested** until the notebook above has been run: `--device cuda`, bf16 weights and KV cache, and memory-based KV sizing. The bf16 code path itself is tested on CPU. flash-attn and CUDA graphs are not used.
+- **GPU support is verified on one GPU type only** (a Kaggle Tesla T4, bf16). flash-attn and CUDA graphs are not used, so GPU throughput is well below nano-vllm's.
 - No tensor parallelism (nano-vllm has it; dropped for clarity and CPU support).
 - With the default LSA embedder, chunks folded in between refits only use vocabulary seen at the last fit; the next refit (after 25% growth) picks up new terms. BM25 always indexes every term immediately.
 - Deleting a document rebuilds the indexes (HNSW has no cheap delete).
