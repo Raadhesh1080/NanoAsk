@@ -32,6 +32,14 @@ class ModelRunner:
         self.kv_dtype = model.dtype
         self.generator = torch.Generator(device=self.device).manual_seed(seed)
         self.max_num_batched_tokens = max_num_batched_tokens
+        # A previous engine on the same model left views of its KV cache on the attention modules.
+        # Drop them first, otherwise that cache stays allocated and this engine sees no free memory.
+        for block in self.model.transformer.h:
+            block.attn.k_cache = block.attn.v_cache = None
+        if self.device.type == "cuda":
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
         if num_kvcache_blocks is None:
             num_kvcache_blocks = self._blocks_from_budget(kv_cache_mb, gpu_memory_utilization)
         assert num_kvcache_blocks > 0

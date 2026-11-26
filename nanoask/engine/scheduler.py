@@ -36,6 +36,11 @@ class Scheduler:
 
     def add(self, seq: Sequence):
         assert seq.num_tokens < self.max_model_len, "prompt longer than max_model_len"
+        needed = -(-min(self.max_model_len, seq.num_tokens + seq.sampling_params.max_tokens) // self.block_size)
+        total = self.block_manager.num_free_blocks + len(self.block_manager.used_block_ids)
+        if needed > total:
+            raise ValueError(f"request needs up to {needed} KV blocks but the cache only has {total}; "
+                             "free GPU memory or lower max_model_len / max_tokens")
         self.waiting.append(seq)
 
     def abort(self, seq: Sequence):

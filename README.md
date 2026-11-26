@@ -24,7 +24,7 @@ A small, readable document Q&A server that combines three reference projects:
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest tests -q                       # 23 tests, ~1 min on CPU
+python -m pytest tests -q                       # 25 tests, ~1 min on CPU
 python -m nanoask.server --docs data/sample_docs
 # open http://127.0.0.1:8000, or:
 curl -s localhost:8000/query -H 'content-type: application/json' \

@@ -117,3 +117,38 @@ def test_block_manager_refcounts():
     bm.deallocate(a)
     bm.deallocate(b)
     assert bm.num_free_blocks == 8
+
+
+def test_new_engine_releases_previous_kv_cache():
+    """A second engine on the same model must not keep the first engine's cache alive
+    (on CUDA that cache would otherwise eat the memory the second one sizes itself from)."""
+    import gc
+    import weakref
+
+    from nanoask.engine.model_runner import ModelRunner
+
+    model = tiny_model("L")
+    eng1 = LLMEngine(model, FakeTok(), EngineConfig(block_size=4, num_kvcache_blocks=16))
+    old_cache = weakref.ref(eng1.runner.kv_cache)
+    del eng1
+    seen = {}
+    orig = ModelRunner._allocate_kv_cache
+
+    def spy(self):
+        gc.collect()
+        seen["old_cache_alive_at_allocation"] = old_cache() is not None
+        orig(self)
+
+    ModelRunner._allocate_kv_cache = spy
+    try:
+        LLMEngine(model, FakeTok(), EngineConfig(block_size=4, num_kvcache_blocks=16))
+    finally:
+        ModelRunner._allocate_kv_cache = orig
+    assert seen["old_cache_alive_at_allocation"] is False
+
+
+def test_request_too_big_for_cache_is_a_clear_error():
+    model = tiny_model("L")
+    eng = LLMEngine(model, FakeTok(), EngineConfig(block_size=4, num_kvcache_blocks=2))
+    with pytest.raises(ValueError, match="KV blocks"):
+        eng.add_request(list(range(2, 20)), SamplingParams(max_tokens=8))

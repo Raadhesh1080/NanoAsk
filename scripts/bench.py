@@ -138,6 +138,7 @@ def main():
         seq_time = time.perf_counter() - t
 
     print(f"continuous batching: {len(prompts)} requests ...", flush=True)
+    del eng  # free the first engine's KV cache before sizing the second one
     eng = make()
     sync()
     t = time.perf_counter()
